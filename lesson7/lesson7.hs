@@ -1,5 +1,5 @@
-myGcd:: Int -> Int -> Int
-myGcd a b = if remainder == 0
-               then b
-               else myGcd b remainder
-                 where remainder = a `mod` b
+myGCD:: Int -> Int -> Int
+myGCD a 0 = a
+myGCD a b = myGCD b (a `mod` b)
+
+myTail (_:xs) = xs
