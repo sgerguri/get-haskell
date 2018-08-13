@@ -68,7 +68,7 @@ createTS times values = TS completeTimes extendedValues
 fileToTS :: [(Int,a)] -> TS a
 fileToTS = uncurry createTS . unzip
 
-showTVPair :: Show a => Int -> (Maybe a) -> String
+showTVPair :: Show a => Int -> Maybe a -> String
 showTVPair time (Just value) = mconcat [show time,"|",show value,"\n"]
 showTVPair time Nothing = mconcat [show time,"|NA\n"]
 
@@ -90,11 +90,11 @@ ts4 = fileToTS file4
 
 insertMaybePair :: Ord k => Map.Map k v -> (k, Maybe v) -> Map.Map k v
 insertMaybePair myMap (_, Nothing) = myMap
-insertMaybePair myMap (key, (Just value)) = Map.insert key value myMap
+insertMaybePair myMap (key, Just value) = Map.insert key value myMap
 
 combineTS :: TS a -> TS a -> TS a
-combineTS (TS [] []) ts2 = ts2
-combineTS ts1 (TS [] []) = ts1
+combineTS (TS [] []) t2 = t2
+combineTS t1 (TS [] []) = t1
 combineTS (TS t1 v1) (TS t2 v2) = TS completeTimes combinedValues
   where bothTimes = mconcat [t1, t2]
         completeTimes = [minimum bothTimes .. maximum bothTimes]
@@ -111,19 +111,23 @@ instance Monoid (TS a) where
 tsAll :: TS Double
 tsAll = mconcat [ts1,ts2,ts3,ts4]
 
+median :: (Real a) => [a] -> Double
+median xs | odd $ length xs = realToFrac $ xs !! (lowerIdx + 1)
+          | otherwise = (lower + upper) / 2
+  where (lowerIdx, upperOffset) = length xs `divMod` 2
+        lower = realToFrac $ xs !! lowerIdx
+        upper = realToFrac $ xs !! (lowerIdx + upperOffset)
+
+medianTS :: (Real a) => TS a -> Maybe Double
+medianTS (TS _ values) = justApply median values
+
 mean :: (Real a) => [a] -> Double
 mean xs = total/count
   where total = (realToFrac . sum) xs
         count = (realToFrac . length) xs
 
 meanTS :: (Real a) => TS a -> Maybe Double
-meanTS (TS _ []) = Nothing
-meanTS (TS _ values) = if all (== Nothing) values
-                           then Nothing
-                           else Just avg
-  where justVals = filter isJust values
-        cleanVals = map fromJust justVals
-        avg = mean cleanVals
+meanTS (TS _ values) = justApply mean values
 
 type CompareFunc a = a -> a -> a
 type TSCompareFunc a = (Int, Maybe a) -> (Int, Maybe a) -> (Int, Maybe a)
@@ -138,7 +142,7 @@ makeTSCompare func = newFunc
                                                   else (i2, Just val2)
 
 compareTS :: Eq a => (a -> a -> a) -> TS a -> Maybe (Int, Maybe a)
-compareTS func (TS [] []) = Nothing
+compareTS _ (TS [] []) = Nothing
 compareTS func (TS times values) = if all (== Nothing) values
                                    then Nothing
                                    else Just best
@@ -151,34 +155,40 @@ minTS = compareTS min
 maxTS :: Ord a => TS a -> Maybe (Int, Maybe a)
 maxTS = compareTS max
 
+pairApp :: Num a => (a -> a -> a) -> Maybe a -> Maybe a -> Maybe a
+pairApp f = (<*>) . (pure f <*>)
+
 diffPair :: Num a => Maybe a -> Maybe a -> Maybe a
-diffPair Nothing _ = Nothing
-diffPair _ Nothing = Nothing
-diffPair (Just x) (Just y) = Just (x - y)
+diffPair = pairApp (-)
+
+divPair :: Integral a => Maybe a -> Maybe a -> Maybe a
+divPair = pairApp div
 
 diffTS :: Num a => TS a -> TS a
-diffTS (TS [] []) = TS [] []
+diffTS (TS [] []) = mempty
 diffTS (TS times values) = TS times (Nothing : diffValues)
   where shiftValues = tail values
         diffValues = zipWith diffPair shiftValues values
 
-meanMaybe :: (Real a) => [Maybe a] -> Maybe Double
-meanMaybe vals = if Nothing `elem` vals
-                 then Nothing
-                 else Just avg
-  where avg = mean $ map fromJust vals
+justApply :: (Real a) => ([a] -> Double) -> [Maybe a] -> Maybe Double
+justApply f = (f <$>) . sequence
 
-movingAvg :: (Real a) => [Maybe a] -> Int -> [Maybe Double]
-movingAvg [] _ = []
-movingAvg vals n = if length nextVals == n
-                   then meanMaybe nextVals : movingAvg restVals n
-                   else []
+moving :: (Real a) => ([Maybe a] -> Maybe Double) -> [Maybe a] -> Int -> [Maybe Double]
+moving f vals n
+  | length nextVals == n = f nextVals : moving f restVals n
+  | otherwise = []
   where nextVals = take n vals
         restVals = tail vals
 
-movingAverageTS :: (Real a) => TS a -> Int -> TS Double
-movingAverageTS (TS [] []) _ = TS [] []
-movingAverageTS (TS times values) n = TS times smoothedValues
-  where ma = movingAvg values n
+movingTS :: (Real a) => ([a] -> Double) -> TS a -> Int -> TS Double
+movingTS _ (TS [] []) _ = mempty
+movingTS f (TS times values) n = TS times smoothedValues
+  where transformedVals = moving (justApply f) values n
         nothings = replicate (n `div` 2) Nothing
-        smoothedValues = mconcat [nothings, ma, nothings]
+        smoothedValues = mconcat [nothings, transformedVals, nothings]
+
+movingAverageTS :: (Real a) => TS a -> Int -> TS Double
+movingAverageTS = movingTS mean
+
+movingMedianTS :: (Real a) => TS a -> Int -> TS Double
+movingMedianTS = movingTS median
